@@ -1,0 +1,6 @@
+player,position,team,season,games,wins,win_pct,pass_yds,pass_td,pass_int,pass_cmp,pass_att,pass_epa,rush_yds,rush_td,rush_att,rec,rec_yds,rec_td,targets,target_share,fantasy_pts
+Josh Allen,QB,BUF,2024,17,13,0.765,3731,28,6,307,483,120.5,531,12,102,0,0,0,0,0,330
+Lamar Jackson,QB,BAL,2024,17,12,0.706,4172,41,4,316,474,145.2,915,4,139,0,0,0,0,0,430
+Saquon Barkley,RB,PHI,2024,16,14,0.824,0,0,0,0,0,0,2005,13,345,33,278,2,43,0.09,322
+Jared Goff,QB,DET,2024,17,15,0.882,4629,37,12,390,539,110.3,56,0,34,0,0,0,0,0,340
+Joe Burrow,QB,CIN,2024,17,9,0.529,4918,43,9,460,652,135.8,201,2,42,0,0,0,0,0,400

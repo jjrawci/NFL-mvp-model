@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Large source dataset — too big for GitHub (100MB limit); regenerate the
+# raw CSVs from it with `python run.py ingest`.
+NFL_All_Player_Game_Data_1950_2026.parquet
+
+# Generated raw data + the large feature matrix (rebuild with the pipeline)
+data/raw/player_stats.csv
+data/raw/player_stats_weekly.csv
+data/raw/team_records.csv
+data/processed/features.csv
+
+# NOTE: trained models (data/processed/*.pkl, *_meta.json), feature weights,
+# and data/raw/mvp_winners.csv ARE tracked so predictions work on clone.
+
+# OS / editor
+.DS_Store
+.ipynb_checkpoints/

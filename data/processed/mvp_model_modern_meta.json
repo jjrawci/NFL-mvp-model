@@ -1,0 +1,21 @@
+{
+  "era": "modern",
+  "model_type": "logistic-two-track",
+  "start_season": 1999,
+  "end_season": 2024,
+  "tracks": {
+    "qb": {
+      "base_rate": 0.958,
+      "n_features": 73
+    },
+    "skill": {
+      "base_rate": 0.5194,
+      "n_features": 69
+    }
+  },
+  "roc_auc": 0.9968,
+  "top_1_acc": 0.654,
+  "top_2_acc": 0.731,
+  "top_3_acc": 0.769,
+  "top_5_acc": 0.885
+}

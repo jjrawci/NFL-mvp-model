@@ -1,0 +1,21 @@
+{
+  "era": "legacy",
+  "model_type": "logistic-two-track",
+  "start_season": 1957,
+  "end_season": 1998,
+  "tracks": {
+    "offense": {
+      "base_rate": 0.9656,
+      "n_features": 86
+    },
+    "defkick": {
+      "base_rate": 0.3971,
+      "n_features": 30
+    }
+  },
+  "roc_auc": 0.9305,
+  "top_1_acc": 0.525,
+  "top_2_acc": 0.725,
+  "top_3_acc": 0.775,
+  "top_5_acc": 0.9
+}
