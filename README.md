@@ -1,48 +1,48 @@
-# NFL MVP Prediction
+# NFL MVP Prediction (v2)
 
-Predicts NFL AP MVP odds from season stats. Trained on every AP MVP season since
-1957, the model scores a pool of players for a given season and outputs each
-player's probability of winning MVP.
+Predicts NFL AP MVP odds from season stats. A learning-to-rank model trained on
+every modern MVP race (1999–2025) scores a pool of players for a given season
+and outputs each player's probability of winning MVP.
+
+## Results
+
+Leave-one-season-out cross-validation over 27 seasons (1999–2025):
+
+| Metric | Score | Meaning |
+|--------|-------|---------|
+| Top-1  | 63%   | model's #1 pick was the actual MVP |
+| Top-3  | 89%   | actual MVP was in the model's top 3 |
+| Top-5  | 93%   | actual MVP was in the model's top 5 |
+
+Top-3 and top-5 are the most reliable measures of quality — with only ~27 MVP
+races, top-1 is noisy because the closest two-player races (e.g. Stafford vs.
+Maye 2025, decided by one first-place vote) are near coin-flips the stats can't
+separate.
 
 ## How it works
 
-Two models, one per era, because the game — and the stats available to describe
-it — changed over time:
+**Learning to rank.** MVP voting is a per-season ranking problem, not binary
+classification. The model (XGBoost's ranking objective) is trained on the full
+AP voting data as graded relevance: a near-unanimous winner is a 4, a player who
+got a stray vote is a 1, non-vote-getters are 0. It learns to order players
+within each season, which beats a binary winner/not-winner classifier.
 
-| Model  | Seasons   | Features                                  | Top-1 | Top-3 |
-|--------|-----------|-------------------------------------------|-------|-------|
-| modern | 1999–2024 | full set incl. EPA & advanced metrics     | 65.4% | 76.9% |
-| legacy | 1957–1998 | traditional box-score stats (no EPA)      | 52.5% | 77.5% |
+**One model over all offensive candidates.** QBs, RBs, WRs and TEs are ranked
+together so the model learns their relative order directly (e.g. a historic RB
+season vs. a strong QB season). Defenders and kickers are out of scope — no
+non-offensive player has won since 1986.
 
-"Top-1" = how often the model's #1 pick was the actual MVP (leave-one-season-out
-cross-validation). "Top-3" = how often the actual MVP was in the model's top 3.
+### Features
 
-### Position tracks
-
-MVP voting rewards different things by position — a QB essentially must be on an
-elite team, while a running back can win by carrying a heavier individual load on
-a weaker team. A single model can't hold both patterns, so each model trains
-separate per-position tracks and combines them with dampened historical base
-rates (so a QB and an RB are compared fairly):
-
-- **modern** splits into `qb`, `skill` (RB/WR/TE), and `defkick` (defense/kickers)
-- **legacy** merges `qb`+`skill` into one `offense` track (its smaller data does
-  better merged) plus a `defkick` track
-
-### What the model looks at
-
-- **Production**: passing/rushing/receiving yards & TDs, efficiency (passer
-  rating, EPA, YPC), per-game rates
-- **League context**: z-scores and ranks vs. other players at the same kind of
-  position that season
-- **Team success**: win %, whether the team was elite/playoff-caliber, win% vs.
-  the league average
-- **Carrying vs. being carried**: the player's share of their team's total
-  offense and touchdowns, and the strength of their supporting cast
-- **Late-season form**: production over the final 6 weeks vs. earlier (voters
-  remember strong finishes)
-- **Dominance & milestones**: historically freakish seasons (e.g. 2,000 rushing
-  yards, 5,000 passing yards)
+- **Production & efficiency** — passing/rushing/receiving yards & TDs, passer
+  rating, EPA, per-game rates
+- **League-relative comparisons** — z-scores and ranks vs. same-position peers
+  that season; a "led the league in passing yards" flag
+- **Team success** — win %, elite/playoff-team flags, win% vs. league average
+- **Carrying vs. being carried** — share of the team's total offense and TDs,
+  and supporting-cast strength
+- **Late-season form** — production over the final 6 weeks vs. earlier
+- **Dominance & milestones** — historically great seasons (2,000 rush yards, etc.)
 
 ## Setup
 
@@ -55,69 +55,61 @@ in the project root.
 
 ## Usage
 
-### Predict a season
 ```bash
-python run.py predict --season 2024 --era modern      # recent seasons
-python run.py predict --season 1984 --era legacy       # pre-1999 seasons
+# Predict a season (builds the candidate pool automatically)
+python run.py predict --season 2026        # current season odds
+python run.py predict --season 2025         # a completed season
+
+# Predict from your own CSV of player box-score stats
+python run.py predict --input data/current_season_template.csv
+
+# Rebuild everything from scratch
+python run.py pipeline                      # ingest → mvp → features → train
 ```
 
-### Predict from your own CSV
-Provide a pool of players with their season box-score stats (see
-`data/current_season_template.csv` for the columns):
+Individual steps:
 ```bash
-python run.py predict --input data/current_season_template.csv --era modern
-```
-Include all the realistic contenders in the pool — the model's comparison
-features (ranks, carry share) are computed across whoever you provide.
-
-### Rebuild everything from scratch
-```bash
-python run.py pipeline        # ingest → mvp → features → train (both eras)
-```
-
-Or step by step:
-```bash
-python run.py ingest          # process the local parquet into raw CSVs
-python run.py mvp             # scrape AP MVP winners from Wikipedia
-python run.py features        # build the engineered feature dataset
-python run.py train --era all # train modern + legacy models
+python run.py ingest     # local parquet → raw season/weekly/team CSVs
+python run.py mvp        # scrape AP MVP winners from Wikipedia
+python run.py features   # build the engineered feature dataset
+python run.py train      # train the ranker
 ```
 
 ## Project layout
 
 ```
 MVPproject/
-├── run.py                       # CLI entry point
+├── run.py                    # CLI entry point
 ├── src/
-│   ├── ingest_local.py          # local parquet → raw season/weekly/team CSVs
-│   ├── scraper.py               # AP MVP winners from Wikipedia
-│   ├── features.py              # feature engineering (shared by train + predict)
-│   ├── model.py                 # per-era, per-track training & evaluation
-│   └── predict.py               # scoring a player pool
+│   ├── ingest_local.py       # local parquet → raw CSVs
+│   ├── scraper.py            # AP MVP winners (Wikipedia)
+│   ├── votes.py              # parse full PFR voting tables (data/raw/mvp_votes/)
+│   ├── features.py           # feature engineering (shared by train + predict)
+│   ├── features_spec.py      # feature sets + position-track definitions
+│   ├── model_ranker.py       # the learning-to-rank model (train + save)
+│   └── predict.py            # score a player pool
 ├── data/
-│   ├── raw/                     # player_stats, player_stats_weekly, team_records,
-│   │                            #   mvp_winners (generated)
-│   ├── processed/               # features.csv + trained models + feature weights
+│   ├── raw/                  # generated stats + MVP winners + voting tables
+│   ├── processed/            # features.csv + trained model
 │   └── current_season_template.csv
 └── NFL_All_Player_Game_Data_1950_2026.parquet
 ```
 
 ## Known limitations
 
-- **Non-offensive MVPs** (Alan Page 1971 DT, Mark Moseley 1982 K, Lawrence Taylor
-  1986 LB) are near-impossible to predict — there are only 3 in 68 years, too few
-  for the model to learn the pattern. The `defkick` track keeps them in the pool
-  but ranks them poorly. No defender has won since 1986.
-- **Close two-player races** (e.g. Rodgers vs. Mahomes 2020/21, Lamar vs. Allen
-  2023/24) often come down to voter narrative the stats can't capture. These show
-  up as the model's top-2 being right but top-1 being a coin flip.
-- **Pre-1999 data** lacks EPA and advanced metrics, so the legacy model relies on
-  traditional stats and team record — still effective, just less precise.
+- **Close two-player races** (Stafford/Maye 2025, Rodgers/Mahomes 2020–21,
+  Lamar/Allen 2023–24) often come down to voter narrative the stats can't see.
+  These show up as top-2 being right but top-1 a coin flip.
+- **Anomalous winners** like Adrian Peterson 2012 (2,097 rushing yards but only
+  13 TDs on a mediocre team, winning largely on an ACL-comeback narrative) are
+  near-impossible to predict from a box score.
+- **Defensive/kicker MVPs** (3 ever, none since 1986) are out of scope.
 
-## Why logistic regression (not XGBoost)?
+## v1 vs v2
 
-With one MVP per season there are only ~27 positive training examples in the
-modern era and ~69 across all history. That's far too few for gradient boosting
-to learn reliable non-linear splits — in testing, XGBoost (classifier and ranker)
-topped out around 42% top-1 vs. 61.5% for logistic regression. Linear models
-generalize better when positive examples are scarce.
+- **v1** (tagged `v1`): logistic-regression models, binary winner target, two
+  eras (modern + legacy 1957–1998). ~61% top-1 modern.
+- **v2** (current): learning-to-rank on full voting data, modern-only
+  (1999–2025), tuned. Better top-3/top-5, cleaner codebase.
+
+Check out the `v1` tag to see the earlier approach.

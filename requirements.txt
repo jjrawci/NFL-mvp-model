@@ -2,15 +2,11 @@
 pandas>=2.0
 numpy>=1.24
 scikit-learn>=1.3
-pyarrow>=14.0        # read the local game-by-game parquet dataset
+xgboost>=2.0          # learning-to-rank model (XGBRanker)
+pyarrow>=14.0         # read the local game-by-game parquet dataset
+openpyxl>=3.1         # read the exported PFR voting .xlsx tables
 
 # MVP winner scraping (Wikipedia)
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
-
-# Optional / exploration
-matplotlib>=3.7
-seaborn>=0.13
-jupyter>=1.0
-tqdm>=4.66

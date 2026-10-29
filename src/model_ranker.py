@@ -26,8 +26,8 @@ from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRanker
 
-# reuse the track assignment + feature sets from the logistic model module
-import model as base
+# feature sets + position-track assignment
+import features_spec as spec
 
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 
@@ -69,7 +69,7 @@ def _offense_features(df: pd.DataFrame) -> list:
     """Union of qb + skill feature sets (ranker scores all offense together)."""
     feats = []
     for track in OFFENSE_TRACKS:
-        for f in base.get_feature_cols(df, track, era="modern"):
+        for f in spec.get_feature_cols(df, track):
             if f in df.columns and f not in feats:
                 feats.append(f)
     return feats
@@ -97,7 +97,7 @@ def _load_features() -> pd.DataFrame:
         raise FileNotFoundError("features.csv not found — run `python run.py features` first.")
     df = pd.read_csv(path, low_memory=False)
     df = df[(df["season"] >= START) & (df["season"] <= END)].copy().reset_index(drop=True)
-    df["_track"] = df["position"].apply(lambda p: base.assign_track_for(p, "split"))
+    df["_track"] = df["position"].apply(spec.assign_track)
     if "vote_share" not in df.columns:
         df["vote_share"] = df["mvp_winner"].astype(float)
     df["rel"] = df["vote_share"].fillna(0).apply(vote_relevance)

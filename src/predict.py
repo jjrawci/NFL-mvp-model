@@ -25,72 +25,45 @@ from pathlib import Path
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 
 
-def load_model(era: str = "modern"):
-    model_path = PROCESSED_DIR / f"mvp_model_{era}.pkl"
-    meta_path = PROCESSED_DIR / f"mvp_model_{era}_meta.json"
-
+def load_model():
+    model_path = PROCESSED_DIR / "mvp_model_modern.pkl"
+    meta_path = PROCESSED_DIR / "mvp_model_modern_meta.json"
     if not model_path.exists():
         raise FileNotFoundError(
-            f"Model not found at {model_path}. "
-            f"Run `python run.py train --era {era}` first."
+            f"Model not found at {model_path}. Run `python run.py train` first."
         )
-
     with open(model_path, "rb") as f:
         model = pickle.load(f)
-
     with open(meta_path) as f:
         meta = json.load(f)
-
     return model, meta
 
 
-def _assign_track(position) -> str:
-    """Mirror of model.assign_track — map a position to its MVP contest track."""
-    if position is None or (isinstance(position, float) and np.isnan(position)):
-        return "qb"
-    p = str(position).upper().strip()
-    if p == "QB" or p.startswith("QB"):
-        return "qb"
-    if p in {"RB", "HB", "FB", "WR", "TE"} or any(
-            p.startswith(x) for x in ["RB", "HB", "FB", "WR", "TE"]):
-        return "skill"
-    if p in {"K", "PK"}:
-        return "defkick"
-    if p in {"DE", "DT", "LB", "CB", "S", "FS", "SS", "NT", "DB", "DL",
-             "OLB", "ILB", "MLB", "EDGE", "SAF"}:
-        return "defkick"
-    return "qb"
-
-
-def predict_from_df(df: pd.DataFrame, era: str = "modern") -> pd.DataFrame:
+def predict_from_df(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Given a DataFrame of player stats, score each player with the appropriate
-    track model (offense or defense/kick), combine via base rates, and return
-    the DataFrame with an `mvp_prob` column sorted by probability.
+    Score a pool of players with the trained ranker and return the DataFrame
+    with an `mvp_prob` column (readable odds), sorted best-first.
 
-    era="modern" uses the 1999+ models, era="legacy" the pre-1999 models.
+    Only offensive players (QB/RB/WR/TE) are scored — the modern model doesn't
+    cover defenders/kickers (no non-offensive MVP since 1986).
     """
-    bundle, meta = load_model(era)
-    tracks = bundle["tracks"]
-    is_ranker = bundle.get("kind") == "ranker"
-    merged = "offense" in tracks   # legacy merges qb+skill into one "offense" track
+    import sys
+    from pathlib import Path as _P
+    sys.path.insert(0, str(_P(__file__).parent))
+    import features_spec as spec
 
-    # Both the legacy merged model and the modern ranker use one "offense" track
-    has_offense = "offense" in tracks
-
-    def route(pos):
-        t = _assign_track(pos)     # qb / skill / defkick
-        if has_offense and t in ("qb", "skill"):
-            return "offense"
-        return t
+    bundle, meta = load_model()
+    tracks = bundle["tracks"]            # {"offense": {...}}
 
     df = df.copy()
-    df["_track"] = df["position"].apply(route) if "position" in df.columns else (
-        "offense" if merged else "qb")
-    raw = np.zeros(len(df))
+    df["_track"] = (df["position"].apply(spec.assign_track)
+                    if "position" in df.columns else "qb")
+    # Route qb + skill into the single "offense" ranker; others are out of scope
+    df["_route"] = df["_track"].apply(lambda t: "offense" if t in ("qb", "skill") else t)
 
+    raw = np.full(len(df), -np.inf)
     for track, info in tracks.items():
-        mask = (df["_track"] == track).values
+        mask = (df["_route"] == track).values
         if not mask.any():
             continue
         feats = info["feature_cols"]
@@ -98,41 +71,23 @@ def predict_from_df(df: pd.DataFrame, era: str = "modern") -> pd.DataFrame:
             if col not in df.columns:
                 df[col] = 0.0
         X = df.loc[mask, feats].replace([np.inf, -np.inf], np.nan).fillna(0)
-        if is_ranker:
-            # Ranker outputs an arbitrary-scale score; standardise within the
-            # pool then squash to a positive comparable scale, times base rate.
-            scaler = info["scaler"]
-            scores = info["ranker"].predict(scaler.transform(X.values))
-            raw[np.where(mask)[0]] = scores * info["base_rate"]
-        else:
-            p = info["model"].predict_proba(X)[:, 1] * info["base_rate"]
-            raw[np.where(mask)[0]] = p
-
-    # The modern ranker only covers offense; zero out anyone not scored by a
-    # track (e.g. defenders) so they don't appear in the rankings.
-    if is_ranker:
-        scored = df["_track"].isin(tracks).values
-        raw[~scored] = -np.inf
+        scores = info["ranker"].predict(info["scaler"].transform(X.values))
+        raw[np.where(mask)[0]] = scores * info.get("base_rate", 1.0)
 
     df["mvp_score"] = raw
-    if is_ranker:
-        # Ranking scores are arbitrary-scale; the ORDER is what's meaningful.
-        # Turn them into readable odds with a softmax, but only over the
-        # realistic contender pool (top ~15 by score) so the probability mass
-        # isn't diluted across hundreds of irrelevant players.
-        raw_finite = np.where(np.isfinite(raw), raw, np.nanmin(raw[np.isfinite(raw)]) - 1)
-        raw = raw_finite
-        order = np.argsort(-raw)
-        pool = order[:15]
-        probs = np.zeros(len(df))
-        pool_scores = raw[pool]
-        z = (pool_scores - pool_scores.mean()) / (pool_scores.std() + 1e-9)
-        exp = np.exp(z * 1.3)
-        probs[pool] = exp / exp.sum()
-        df["mvp_prob"] = probs
-    else:
-        total = raw.sum()
-        df["mvp_prob"] = raw / total if total > 0 else raw
+    # Ranking scores are arbitrary-scale; the ORDER is what matters. Convert to
+    # readable odds with a softmax over the realistic contender pool (top 15)
+    # so the probability mass isn't spread across hundreds of players.
+    finite = np.isfinite(raw)
+    work = np.where(finite, raw, (np.nanmin(raw[finite]) - 1) if finite.any() else 0)
+    order = np.argsort(-work)
+    pool = order[:15]
+    probs = np.zeros(len(df))
+    ps = work[pool]
+    z = (ps - ps.mean()) / (ps.std() + 1e-9)
+    exp = np.exp(z * 1.3)
+    probs[pool] = exp / exp.sum()
+    df["mvp_prob"] = probs
     df["mvp_prob_raw"] = raw
 
     result = df.sort_values("mvp_prob", ascending=False).reset_index(drop=True)
@@ -143,17 +98,14 @@ def predict_from_df(df: pd.DataFrame, era: str = "modern") -> pd.DataFrame:
 def format_output(result: pd.DataFrame) -> str:
     """Pretty-print the prediction results."""
     lines = ["\n=== NFL MVP Probability Rankings ===\n"]
-    id_cols = [c for c in ["player", "team", "position", "year"] if c in result.columns]
-
     for i, row in result.iterrows():
         player = row.get("player", f"Player {i}")
         team = row.get("team", "?")
         pos = row.get("position", "?")
         prob = row.get("mvp_prob", 0)
         lines.append(f"  {i:2}. {player:<25} {pos:<5} {team:<5}  {prob:6.1%}")
-
-    lines.append("\nNote: probabilities are normalised within this candidate pool.")
-    lines.append(f"Model era: {result.attrs.get('era', 'modern')}")
+    lines.append("\nOdds are a softmax over the top contenders — ordering is the "
+                 "meaningful signal. Offensive players only (QB/RB/WR/TE).")
     return "\n".join(lines)
 
 
