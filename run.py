@@ -45,11 +45,14 @@ def cmd_features(args):
 
 
 def cmd_train(args):
-    from model import train, train_all
-    if args.era == "all":
-        train_all()
-    else:
-        train(era=args.era)
+    # Modern era uses the learning-to-rank model (best performer); legacy uses
+    # the logistic model.
+    if args.era in ("modern", "all"):
+        import model_ranker
+        model_ranker.train()
+    if args.era == "legacy":
+        from model import train
+        train(era="legacy")
 
 
 def cmd_predict(args):

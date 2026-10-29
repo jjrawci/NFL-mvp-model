@@ -86,8 +86,19 @@ def scrape_mvp_winners() -> pd.DataFrame:
             position, team = None, cells[2]
         else:
             position, team = None, (cells[2] if len(cells) > 2 else None)
+
+        # The winner's vote share appears as "27 of 49 (55%)" somewhere in the
+        # row. Capture the percentage as a 0–1 win margin signal.
+        vote_share = None
+        for cell in cells:
+            m = re.search(r"\((\d+)\s*%\)", str(cell))
+            if m:
+                vote_share = int(m.group(1)) / 100.0
+                break
+
         parsed.append({"season_raw": season_raw, "player_raw": player_raw,
-                       "position": position, "team": team})
+                       "position": position, "team": team,
+                       "winner_vote_share": vote_share})
 
     df = pd.DataFrame(parsed)
 
@@ -100,7 +111,8 @@ def scrape_mvp_winners() -> pd.DataFrame:
     # Strip ordinal suffixes like (2), (3) marking repeat winners
     df["player"] = df["player_raw"].str.replace(r"\(\d+\)", "", regex=True).str.strip()
     df["mvp_winner"] = 1
-    df = df[["season", "player", "position", "team", "mvp_winner"]].copy()
+    df = df[["season", "player", "position", "team", "mvp_winner",
+             "winner_vote_share"]].copy()
 
     # Split co-MVP years into separate rows
     CO_MVP_SPLITS = {
@@ -113,7 +125,8 @@ def scrape_mvp_winners() -> pd.DataFrame:
             drop_idx.append(idx)
             for name, pos in CO_MVP_SPLITS[row["player"]]:
                 extra_rows.append({"season": row["season"], "player": name,
-                                   "position": pos, "team": None, "mvp_winner": 1})
+                                   "position": pos, "team": None, "mvp_winner": 1,
+                                   "winner_vote_share": row.get("winner_vote_share")})
     if drop_idx:
         df = df.drop(index=drop_idx)
     if extra_rows:

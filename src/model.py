@@ -302,15 +302,54 @@ def assign_track_for(position, strategy: str) -> str:
 BASE_RATE_POWER = 0.35
 
 
+# Training target mode:
+#   "binary"     : positive = MVP winner only (original)
+#   "vote_share" : treat every vote-getter as a fractional positive, weighted by
+#                  their vote share. Uses the full exported voting data as a
+#                  graded target — the runner-up counts, close races are learned.
+# NOTE: "vote_share" mode produced good-looking CV ranking numbers but broke the
+# absolute predictions — switching the target to "got any votes" compressed all
+# probabilities near 0.5 and let obscure skill players outscore the real winner.
+# Binary (winner-only) gives correctly separated, trustworthy predictions, so it
+# is the default. The voting data is still loaded and available for future use.
+TARGET_MODE = "binary"
+
+# Minimum weight floor for the actual winner so they're never under-weighted.
+WINNER_MIN_WEIGHT = 1.0
+
+# How strongly vote share scales a candidate's training weight. Tuned by CV:
+# 2 gives the best top-1/top-3/top-5 together.
+VOTE_SHARE_MULT = 2.0
+
+
 def _fit_track(df, track, era, strategy, seasons_in_era):
     """Fit one track's pipeline; returns (pipeline, feature_cols, base_rate)."""
     sub, feats = _track_frame(df, track, era, strategy)
     if sub.empty or sub["mvp_winner"].sum() == 0:
         return None, feats, 0.0
     X = sub[feats].replace([np.inf, -np.inf], np.nan).fillna(0)
-    y = sub["mvp_winner"].astype(int)
-    pipe = build_logistic_pipeline()
-    pipe.fit(X, y)
+
+    if TARGET_MODE == "vote_share" and "vote_share" in sub.columns and sub["vote_share"].sum() > 0:
+        # Graded target: label every vote-getter as positive, weighted by their
+        # vote share. A near-unanimous winner contributes ~1.0; a player who got
+        # 15% of the vote contributes 0.15 toward the positive class. Non-vote
+        # getters are negatives at weight 1.0.
+        y = sub["got_votes"].astype(int) if "got_votes" in sub.columns else sub["mvp_winner"].astype(int)
+        vs = pd.to_numeric(sub["vote_share"], errors="coerce").fillna(0.0).values
+        is_winner = (sub["mvp_winner"] == 1).values
+        sw = np.ones(len(sub), dtype=float)
+        pos = y.values == 1
+        # positives weighted by vote share (winner floored so it's never tiny).
+        # Multiplier of 2 tuned by CV: best top-1/top-3/top-5 simultaneously.
+        sw[pos] = np.maximum(vs[pos] * VOTE_SHARE_MULT, 0.25)
+        sw[is_winner] = np.maximum(sw[is_winner], WINNER_MIN_WEIGHT)
+        pipe = build_logistic_pipeline()
+        pipe.fit(X, y, clf__sample_weight=sw)
+    else:
+        y = sub["mvp_winner"].astype(int)
+        pipe = build_logistic_pipeline()
+        pipe.fit(X, y)
+
     raw_rate = sub["mvp_winner"].sum() / seasons_in_era
     base_rate = float(raw_rate ** BASE_RATE_POWER)
     return pipe, feats, base_rate

@@ -136,6 +136,19 @@ def load_team_records() -> pd.DataFrame:
     return df
 
 
+def _load_full_votes() -> pd.DataFrame:
+    """Load full per-candidate voting data from exported PFR tables, if present."""
+    try:
+        from votes import load_all_votes
+        v = load_all_votes()
+        if not v.empty:
+            v["player"] = v["player"].apply(_clean_name)
+        return v
+    except Exception as e:
+        print(f"  (no full voting data: {e})")
+        return pd.DataFrame()
+
+
 def load_mvp_winners() -> pd.DataFrame:
     df = _safe_load("mvp_winners.csv")
     if df.empty:
@@ -145,7 +158,10 @@ def load_mvp_winners() -> pd.DataFrame:
     df = df.dropna(subset=["season"])
     df["season"] = df["season"].astype(int)
     df["mvp_winner"] = 1
-    return df[["season", "player", "position", "mvp_winner"]].copy()
+    cols = ["season", "player", "position", "mvp_winner"]
+    if "winner_vote_share" in df.columns:
+        cols.append("winner_vote_share")
+    return df[cols].copy()
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +198,31 @@ def build_features() -> pd.DataFrame:
         df = df.merge(teams[["season", "team", "wins", "win_pct"]],
                       on=["season", "team"], how="left")
 
-    # Merge MVP labels
+    # Merge MVP labels (and the winner's vote share, when available)
     if not mvp_in_range.empty:
-        df = df.merge(mvp_in_range[["season", "player", "mvp_winner"]],
-                      on=["season", "player"], how="left")
+        merge_cols = ["season", "player", "mvp_winner"]
+        if "winner_vote_share" in mvp_in_range.columns:
+            merge_cols.append("winner_vote_share")
+        df = df.merge(mvp_in_range[merge_cols], on=["season", "player"], how="left")
     df["mvp_winner"] = df.get("mvp_winner", pd.Series(0, index=df.index)).fillna(0).astype(int)
+    if "winner_vote_share" not in df.columns:
+        df["winner_vote_share"] = np.nan
+
+    # Merge full MVP voting data (every candidate's vote share), when exported.
+    # This gives a graded target: 0.0 for non-vote-getters up to ~1.0 for a
+    # near-unanimous winner. Far richer than the binary winner flag.
+    votes = _load_full_votes()
+    if not votes.empty:
+        df = df.merge(votes[["season", "player", "vote_share", "vote_pts",
+                             "first_place_votes"]],
+                      on=["season", "player"], how="left", suffixes=("", "_v"))
+        df["vote_share"] = df["vote_share"].fillna(0.0)
+        df["vote_pts"] = df["vote_pts"].fillna(0.0)
+        df["first_place_votes"] = df["first_place_votes"].fillna(0.0)
+        df["got_votes"] = (df["vote_share"] > 0).astype(int)
+    else:
+        df["vote_share"] = df["mvp_winner"].astype(float)
+        df["got_votes"] = df["mvp_winner"]
 
     # Drop players with essentially no production. Include defensive and kicking
     # stats so that defenders (Alan Page '71, LT '86) and kickers (Moseley '82)

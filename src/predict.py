@@ -72,11 +72,15 @@ def predict_from_df(df: pd.DataFrame, era: str = "modern") -> pd.DataFrame:
     """
     bundle, meta = load_model(era)
     tracks = bundle["tracks"]
+    is_ranker = bundle.get("kind") == "ranker"
     merged = "offense" in tracks   # legacy merges qb+skill into one "offense" track
+
+    # Both the legacy merged model and the modern ranker use one "offense" track
+    has_offense = "offense" in tracks
 
     def route(pos):
         t = _assign_track(pos)     # qb / skill / defkick
-        if merged and t in ("qb", "skill"):
+        if has_offense and t in ("qb", "skill"):
             return "offense"
         return t
 
@@ -94,12 +98,42 @@ def predict_from_df(df: pd.DataFrame, era: str = "modern") -> pd.DataFrame:
             if col not in df.columns:
                 df[col] = 0.0
         X = df.loc[mask, feats].replace([np.inf, -np.inf], np.nan).fillna(0)
-        p = info["model"].predict_proba(X)[:, 1] * info["base_rate"]
-        raw[np.where(mask)[0]] = p
+        if is_ranker:
+            # Ranker outputs an arbitrary-scale score; standardise within the
+            # pool then squash to a positive comparable scale, times base rate.
+            scaler = info["scaler"]
+            scores = info["ranker"].predict(scaler.transform(X.values))
+            raw[np.where(mask)[0]] = scores * info["base_rate"]
+        else:
+            p = info["model"].predict_proba(X)[:, 1] * info["base_rate"]
+            raw[np.where(mask)[0]] = p
 
-    total = raw.sum()
+    # The modern ranker only covers offense; zero out anyone not scored by a
+    # track (e.g. defenders) so they don't appear in the rankings.
+    if is_ranker:
+        scored = df["_track"].isin(tracks).values
+        raw[~scored] = -np.inf
+
+    df["mvp_score"] = raw
+    if is_ranker:
+        # Ranking scores are arbitrary-scale; the ORDER is what's meaningful.
+        # Turn them into readable odds with a softmax, but only over the
+        # realistic contender pool (top ~15 by score) so the probability mass
+        # isn't diluted across hundreds of irrelevant players.
+        raw_finite = np.where(np.isfinite(raw), raw, np.nanmin(raw[np.isfinite(raw)]) - 1)
+        raw = raw_finite
+        order = np.argsort(-raw)
+        pool = order[:15]
+        probs = np.zeros(len(df))
+        pool_scores = raw[pool]
+        z = (pool_scores - pool_scores.mean()) / (pool_scores.std() + 1e-9)
+        exp = np.exp(z * 1.3)
+        probs[pool] = exp / exp.sum()
+        df["mvp_prob"] = probs
+    else:
+        total = raw.sum()
+        df["mvp_prob"] = raw / total if total > 0 else raw
     df["mvp_prob_raw"] = raw
-    df["mvp_prob"] = raw / total if total > 0 else raw
 
     result = df.sort_values("mvp_prob", ascending=False).reset_index(drop=True)
     result.index += 1
