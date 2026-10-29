@@ -2,10 +2,10 @@
   "era": "modern",
   "model_type": "xgboost-ranker",
   "start_season": 1999,
-  "end_season": 2024,
+  "end_season": 2025,
   "n_features": 100,
-  "top_1_acc": 0.692,
-  "top_2_acc": 0.769,
-  "top_3_acc": 0.846,
-  "top_5_acc": 0.962
+  "top_1_acc": 0.593,
+  "top_2_acc": 0.778,
+  "top_3_acc": 0.852,
+  "top_5_acc": 0.963
 }

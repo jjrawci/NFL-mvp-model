@@ -31,7 +31,9 @@ import model as base
 
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 
-START, END = 1999, 2024
+# Train through 2025 (last completed season). 2026 is in progress — no MVP
+# awarded yet — so it's prediction-only, not a training season.
+START, END = 1999, 2025
 # The ranker works best as ONE model over all offensive candidates (QB+RB+WR+TE)
 # ranked together within each season — ranking is inherently comparative, so we
 # want Peterson and Brady in the same group to learn their relative order.
