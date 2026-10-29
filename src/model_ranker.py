@@ -41,11 +41,12 @@ OFFENSE_TRACKS = ("qb", "skill")
 
 XGB_PARAMS = dict(
     objective="rank:ndcg",
-    n_estimators=150,
-    max_depth=2,
+    n_estimators=200,
+    max_depth=3,
     learning_rate=0.03,
-    subsample=0.7,
-    colsample_bytree=0.6,
+    subsample=0.8,
+    colsample_bytree=0.7,
+    min_child_weight=2,
     random_state=42,
     n_jobs=2,
 )
