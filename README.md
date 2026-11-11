@@ -70,6 +70,7 @@ python run.py pipeline                      # ingest → mvp → features → tr
 Individual steps:
 ```bash
 python run.py ingest     # local parquet → raw season/weekly/team CSVs
+python run.py refresh    # pull the latest weeks of the current season, rebuild features
 python run.py mvp        # scrape AP MVP winners from Wikipedia
 python run.py features   # build the engineered feature dataset
 python run.py train      # train the ranker
@@ -84,6 +85,7 @@ MVPproject/
 │   ├── ingest_local.py       # local parquet → raw CSVs
 │   ├── scraper.py            # AP MVP winners (Wikipedia)
 │   ├── votes.py              # parse full PFR voting tables (data/raw/mvp_votes/)
+│   ├── voter_bias.py         # voter-bias features (tested, not used by the model)
 │   ├── features.py           # feature engineering (shared by train + predict)
 │   ├── features_spec.py      # feature sets + position-track definitions
 │   ├── model_ranker.py       # the learning-to-rank model (train + save)
@@ -104,6 +106,34 @@ MVPproject/
   13 TDs on a mediocre team, winning largely on an ACL-comeback narrative) are
   near-impossible to predict from a box score.
 - **Defensive/kicker MVPs** (3 ever, none since 1986) are out of scope.
+
+## Voter bias
+
+Voters are not random. They favor quarterbacks (50 of the 71 MVPs since 1957),
+winning teams and strong finishes. The model trains on real vote results, so it
+already absorbs the biases that show up in the stats.
+
+We also tested whether extra, systematic biases add anything. `src/voter_bias.py`
+builds ten features from information known before each season: reputation
+(prior-year vote share), voter fatigue (past wins, defending MVP), comeback
+stories (games missed last year) and team turnarounds (change in win %). Two tests:
+
+- **Added to the ranker**, compared over 8 random seeds: changes in mean
+  reciprocal rank of -0.007 to +0.008, all within one standard error of zero.
+- **Two-stage re-ranker** (the ranker's score plus a few bias features, applied to
+  each year's top 8, with fully nested leave-one-season-out validation): worse
+  than the ranker alone for every feature set, with seasons improving and
+  worsening about equally.
+
+No measurable effect was detected, so these features are not in the model. That
+is not proof the biases don't exist. With only 27 seasons the confidence
+intervals are wide (a defending MVP's vote share came out +2.5 points, 95%
+interval -1.8 to +6.9), so small effects can't be ruled out. Worth re-testing as
+more seasons accumulate.
+
+Because top-1 accuracy shifts by about ±7 points with the random seed alone,
+feature comparisons here use several seeds and mean reciprocal rank rather than
+a single-seed top-1.
 
 ## v1 vs v2
 

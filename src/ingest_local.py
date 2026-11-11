@@ -75,6 +75,57 @@ def _coalesce(df: pd.DataFrame, modern: str, legacy: str) -> pd.Series:
     return m.fillna(l)
 
 
+NFLVERSE_WEEKLY_URL = (
+    "https://github.com/nflverse/nflverse-data/releases/download/"
+    "stats_player/stats_player_week_{season}.parquet"
+)
+
+
+def refresh_current_season(season: int = None) -> Path:
+    """
+    Download the latest weekly player stats for an in-progress season from
+    nflverse and save them to data/raw/nflverse_weekly_<season>.parquet.
+
+    The big local parquet is a snapshot; this lets us pull in newer weeks
+    without rebuilding it. load_raw() overlays the refreshed file on top of the
+    snapshot for that season.
+    """
+    import io
+    import requests
+    import pyarrow.parquet as pq
+
+    season = season or INGEST_END
+    url = NFLVERSE_WEEKLY_URL.format(season=season)
+    print(f"Downloading {season} weekly stats from nflverse...")
+    resp = requests.get(url, headers={"User-Agent": "research python-requests"},
+                        timeout=120)
+    resp.raise_for_status()
+    new = pq.read_table(io.BytesIO(resp.content)).to_pandas()
+    new = new[new["season_type"] == "REG"].copy()
+    out = RAW_DIR / f"nflverse_weekly_{season}.parquet"
+    new.to_parquet(out, index=False)
+    weeks = sorted(new["week"].dropna().astype(int).unique().tolist())
+    print(f"  Saved {out.name}: {len(new):,} rows, weeks {weeks[0]}-{weeks[-1]}")
+    return out
+
+
+def _overlay_refreshed(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace a season's nflverse rows with any refreshed weekly file."""
+    for path in sorted(RAW_DIR.glob("nflverse_weekly_*.parquet")):
+        fresh = pd.read_parquet(path)
+        if fresh.empty:
+            continue
+        season = int(fresh["season"].iloc[0])
+        is_old = (df["season"] == season) & (df["data_source"] == "nflverse_weekly_player_stats")
+        old_weeks = df.loc[is_old, "week"].max()
+        fresh = fresh.copy()
+        fresh["data_source"] = "nflverse_weekly_player_stats"
+        df = pd.concat([df[~is_old], fresh], ignore_index=True)
+        print(f"  Overlaid {path.name}: {season} now through week "
+              f"{int(fresh['week'].max())} (snapshot had week {int(old_weeks)})")
+    return df
+
+
 def load_raw() -> pd.DataFrame:
     if not LOCAL_PARQUET.exists():
         raise FileNotFoundError(
@@ -84,6 +135,7 @@ def load_raw() -> pd.DataFrame:
     print(f"Loading {LOCAL_PARQUET.name} ...")
     df = pd.read_parquet(LOCAL_PARQUET)
     print(f"  {len(df):,} rows loaded")
+    df = _overlay_refreshed(df)
     return df
 
 

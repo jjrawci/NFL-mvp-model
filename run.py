@@ -26,6 +26,17 @@ def cmd_ingest(args):
     ingest()
 
 
+def cmd_refresh(args):
+    """Pull the latest weeks for the in-progress season and rebuild features."""
+    from ingest_local import refresh_current_season, ingest
+    from features import build_features
+    refresh_current_season(args.season)
+    ingest()
+    build_features()
+    print("\n\u2713 Data refreshed. No retraining needed — run "
+          "`python run.py predict --season <year>` for updated odds.")
+
+
 def cmd_mvp(args):
     from scraper import scrape_mvp_winners
     scrape_mvp_winners()
@@ -112,6 +123,9 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("ingest", help="Process the local game-by-game parquet into raw CSVs")
+    p_ref = sub.add_parser("refresh", help="Download latest weeks for the current season and rebuild features")
+    p_ref.add_argument("--season", type=int, default=None,
+                       help="Season to refresh (default: the current in-progress season)")
     sub.add_parser("mvp", help="Scrape AP MVP winners from Wikipedia")
     sub.add_parser("features", help="Build the feature dataset")
     sub.add_parser("train", help="Train the learning-to-rank MVP model")
@@ -127,7 +141,7 @@ def main():
 
     args = parser.parse_args()
     dispatch = {
-        "ingest": cmd_ingest, "mvp": cmd_mvp, "features": cmd_features,
+        "ingest": cmd_ingest, "refresh": cmd_refresh, "mvp": cmd_mvp, "features": cmd_features,
         "train": cmd_train, "predict": cmd_predict, "pipeline": cmd_pipeline,
     }
     if args.command in dispatch:

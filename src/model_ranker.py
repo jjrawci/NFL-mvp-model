@@ -75,7 +75,7 @@ def _offense_features(df: pd.DataFrame) -> list:
     return feats
 
 
-def _fit_ranker(sub: pd.DataFrame, feats: list):
+def _fit_ranker(sub: pd.DataFrame, feats: list, params: dict = None):
     """
     Fit an XGBRanker on one track. Rows must be sorted by season so the group
     sizes line up. Returns (ranker, scaler).
@@ -86,9 +86,50 @@ def _fit_ranker(sub: pd.DataFrame, feats: list):
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     groups = [int((sub["season"] == s).sum()) for s in sorted(sub["season"].unique())]
-    r = XGBRanker(**XGB_PARAMS)
+    r = XGBRanker(**(params or XGB_PARAMS))
     r.fit(Xs, y, group=groups)
     return r, scaler
+
+
+def cross_validate(off: pd.DataFrame, feats: list, seed: int = None) -> dict:
+    """
+    Leave-one-season-out CV: one ranker over ALL offensive players per fold.
+
+    Returns top-N accuracy (was the actual MVP in the model's top N?) plus two
+    smoother measures that don't swing on a single coin-flip season:
+      mrr       : mean reciprocal rank of the winner (1.0 = always #1)
+      mean_rank : average rank the model gave the actual winner
+    and `winner_ranks`, a {season: rank} dict for diagnosing individual years.
+    """
+    off = off.reset_index(drop=True)
+    params = dict(XGB_PARAMS)
+    if seed is not None:
+        params["random_state"] = seed
+    cv = np.zeros(len(off))
+    for s in sorted(off["season"].unique()):
+        tr = off[off["season"] != s]
+        te = off[off["season"] == s]
+        if tr["mvp_winner"].sum() == 0 or te.empty:
+            continue
+        r, scaler = _fit_ranker(tr, feats, params)
+        Xte = scaler.transform(te[feats].replace([np.inf, -np.inf], np.nan).fillna(0).values)
+        cv[te.index.values] = r.predict(Xte)
+    off = off.assign(pred=cv)
+
+    winner_ranks = {}
+    for s, g in off.groupby("season"):
+        if g["mvp_winner"].sum() == 0:
+            continue
+        ranks = g["pred"].rank(ascending=False, method="min")
+        winner_ranks[int(s)] = int(ranks[g["mvp_winner"] == 1].min())  # best-ranked co-winner
+
+    rk = np.array(list(winner_ranks.values()), dtype=float)
+    out = {f"top_{n}_acc": round(float((rk <= n).mean()), 3) for n in (1, 2, 3, 5)}
+    out["mrr"] = round(float((1.0 / rk).mean()), 4)
+    out["mean_rank"] = round(float(rk.mean()), 3)
+    out["winner_ranks"] = winner_ranks
+    out["oof_pred"] = cv          # out-of-fold score for every row (aligned to `off`)
+    return out
 
 
 def _load_features() -> pd.DataFrame:
@@ -113,35 +154,13 @@ def train() -> dict:
           f"{int((off['vote_share']>0).sum())} vote-getters.")
 
     feats = _offense_features(off)
-    seasons = sorted(off["season"].unique())
-    cv = np.zeros(len(off))
+    cvres = cross_validate(off, feats)
+    top_n = {k: v for k, v in cvres.items() if k.startswith("top_")}
 
-    # Leave-one-season-out CV — one ranker over ALL offensive players per fold
-    for s in seasons:
-        tr = off[off["season"] != s]
-        te = off[off["season"] == s]
-        if tr["mvp_winner"].sum() == 0 or te.empty:
-            continue
-        r, scaler = _fit_ranker(tr, feats)
-        Xte = scaler.transform(te[feats].replace([np.inf, -np.inf], np.nan).fillna(0).values)
-        cv[te.index.values] = r.predict(Xte)
-
-    off["pred"] = cv
-
-    top_n = {}
-    for n in [1, 2, 3, 5]:
-        c = t = 0
-        for s, g in off.groupby("season"):
-            if g["mvp_winner"].sum() == 0:
-                continue
-            t += 1
-            if g.nlargest(n, "pred")["mvp_winner"].max() == 1:
-                c += 1
-        top_n[f"top_{n}_acc"] = round(c / t, 3) if t else 0
-
-    print("\n=== Ranker CV (modern 1999-2024) ===")
+    print(f"\n=== Ranker CV (modern {START}-{END}) ===")
     for k, v in top_n.items():
         print(f"  {k}:  {v:.1%}")
+    print(f"  mrr:  {cvres['mrr']:.3f}   mean winner rank: {cvres['mean_rank']:.2f}")
 
     # Fit final ranker on all offensive data
     print("\nFitting final ranker on full dataset...")
