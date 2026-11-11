@@ -56,6 +56,18 @@ together so the model learns their relative order directly (e.g. a historic RB
 season vs. a strong QB season). Defenders and kickers are out of scope — no
 non-offensive player has won since 1986.
 
+**Prediction matches training.** Many features are relative to whoever is in the
+pool (league z-scores, ranks, the "full season" cutoff). Training only kept
+players with some recorded production, so prediction applies the same filter
+(`has_production()` in `src/features.py`) and includes the late-season features.
+An earlier version of v3 skipped both: the prediction pool was padded with
+linemen and other zero-stat players, which shifted the median games played and
+every league-relative feature, and the late-season features were set to 0. Only
+60 of the 100 model features matched the training data. They now all match, and
+the accuracy cross-validation was unaffected because it used the training data
+directly. The visible change was in current-season odds (for 2026 the favourite
+moved from about 45% to 49%), with little change in the ordering.
+
 ### Features
 
 - **Production & efficiency** — passing/rushing/receiving yards & TDs, passer
