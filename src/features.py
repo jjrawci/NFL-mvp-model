@@ -59,6 +59,26 @@ def _safe_load(filename: str) -> pd.DataFrame:
     return pd.read_csv(path, low_memory=False)
 
 
+PRODUCTION_STATS = ["pass_yds", "rush_yds", "rec_yds", "fantasy_pts",
+                    "pass_td", "rush_td", "rec_td",
+                    "def_sacks", "def_int", "def_tds",
+                    "fg_made", "pat_made"]
+
+
+def has_production(df: pd.DataFrame) -> pd.Series:
+    """
+    True for rows with any recorded production. Used to drop linemen and other
+    no-stat rows. Training AND prediction must both apply this filter: the
+    league-relative features (z-scores, ranks, the 'full season' median) are
+    computed against whoever is in the pool, so a pool padded with zero-stat
+    players gives different values than the model was trained on.
+    """
+    cols = [c for c in PRODUCTION_STATS if c in df.columns]
+    if not cols:
+        return pd.Series(True, index=df.index)
+    return df[cols].fillna(0).abs().sum(axis=1) > 0
+
+
 def _clean_name(name) -> str:
     if pd.isna(name):
         return ""
@@ -228,14 +248,8 @@ def build_features() -> pd.DataFrame:
     # stats so that defenders (Alan Page '71, LT '86) and kickers (Moseley '82)
     # — all MVP winners — are NOT filtered out. An MVP winner is always kept
     # regardless, as a safeguard.
-    key_stat_cols = [c for c in ["pass_yds", "rush_yds", "rec_yds", "fantasy_pts",
-                                  "pass_td", "rush_td", "rec_td",
-                                  "def_sacks", "def_int", "def_tds",
-                                  "fg_made", "pat_made"] if c in df.columns]
-    if key_stat_cols:
-        has_production = df[key_stat_cols].fillna(0).abs().sum(axis=1) > 0
-        keep = has_production | (df["mvp_winner"] == 1)
-        df = df[keep].reset_index(drop=True)
+    keep = has_production(df) | (df["mvp_winner"] == 1)
+    df = df[keep].reset_index(drop=True)
 
     # Run the shared feature-engineering pipeline
     df = engineer_features(df, team_cast=team_cast, use_weekly=True)

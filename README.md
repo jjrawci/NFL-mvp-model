@@ -77,6 +77,31 @@ pip install -r requirements.txt
 The historical game data lives in `NFL_All_Player_Game_Data_1950_2026.parquet`
 in the project root.
 
+### Data: what's in the repo and what isn't
+
+Included in the repo, so a clone can predict right away:
+- the trained model (`data/processed/mvp_model_modern.pkl` and `_meta.json`)
+- AP MVP winners (`data/raw/mvp_winners.csv`)
+- the exported voting tables (`data/raw/mvp_votes/mvp_votes_<year>.xlsx`, 1999–2025)
+
+Not included (too large or regenerable, listed in `.gitignore`):
+- **`NFL_All_Player_Game_Data_1950_2026.parquet`**: the game-by-game player
+  stats. This is the one input you must supply yourself. It is too big for GitHub
+  and goes in the project root with that exact filename. It needs nflverse-style
+  columns (`season`, `week`, `player_id`, `season_type`, `game_won`, box-score
+  stats), as read by `src/ingest_local.py`.
+- Files generated from it by `python run.py ingest` and `python run.py features`:
+  `data/raw/player_stats.csv`, `player_stats_weekly.csv`, `team_records.csv` and
+  `data/processed/features.csv`.
+- Downloaded caches: `data/raw/nflverse_weekly_<season>.parquet` (from
+  `python run.py refresh`) and `data/raw/nflverse_games.parquet` (the schedule,
+  fetched on demand).
+
+To predict from a fresh clone, add the parquet, run `python run.py ingest`, then
+`python run.py predict --season 2026`. To retrain, also run
+`python run.py features` and then `python run.py train`. `refresh` and the
+schedule download need internet access to GitHub (nflverse releases).
+
 ## Usage
 
 ```bash

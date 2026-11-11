@@ -72,7 +72,9 @@ def cmd_predict(args):
                 break
         df = pd.DataFrame(players)
 
-    df = add_derived_features(df, use_weekly=False)
+    # Stored seasons have weekly data, so include the late-season features the
+    # model was trained with. Custom pools (CSV / interactive) don't.
+    df = add_derived_features(df, use_weekly=args.season is not None)
     result = predict_from_df(df)
     print(format_output(result.head(args.top)))
 
@@ -89,6 +91,9 @@ def _season_pool(season: int):
     pool = stats[stats["season"] == season].copy()
     if pool.empty:
         raise SystemExit(f"No stored stats for season {season}.")
+    # Same production filter as training, so league-relative features match.
+    from features import has_production
+    pool = pool[has_production(pool)].copy()
     if "games_played" in pool.columns:
         pool = pool.rename(columns={"games_played": "games"})
     teams = pd.read_csv(raw_dir / "team_records.csv")
