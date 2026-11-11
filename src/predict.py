@@ -62,6 +62,7 @@ def predict_from_df(df: pd.DataFrame) -> pd.DataFrame:
     df["_route"] = df["_track"].apply(lambda t: "offense" if t in ("qb", "skill") else t)
 
     raw = np.full(len(df), -np.inf)
+    odds_scale = 1.3
     for track, info in tracks.items():
         mask = (df["_route"] == track).values
         if not mask.any():
@@ -72,12 +73,22 @@ def predict_from_df(df: pd.DataFrame) -> pd.DataFrame:
                 df[col] = 0.0
         X = df.loc[mask, feats].replace([np.inf, -np.inf], np.nan).fillna(0)
         scores = info["ranker"].predict(info["scaler"].transform(X.values))
+        if "logit" in info:
+            # Blend with the logistic model. Each model's scores are standardised
+            # across the whole offensive pool, as in cross-validation.
+            lscores = info["logit"].decision_function(
+                info["logit_scaler"].transform(X.values))
+            w = info.get("w_ranker", 0.5)
+            zr = (scores - scores.mean()) / (scores.std() + 1e-9)
+            zl = (lscores - lscores.mean()) / (lscores.std() + 1e-9)
+            scores = w * zr + (1 - w) * zl
         raw[np.where(mask)[0]] = scores * info.get("base_rate", 1.0)
+        odds_scale = info.get("odds_scale", 1.3)
 
     df["mvp_score"] = raw
-    # Ranking scores are arbitrary-scale; the ORDER is what matters. Convert to
-    # readable odds with a softmax over the realistic contender pool (top 15)
-    # so the probability mass isn't spread across hundreds of players.
+    # Scores are arbitrary-scale; the ORDER is what matters. Convert to readable
+    # odds with a softmax over the realistic contender pool (top 15), using the
+    # scale fitted on past seasons so stated odds match how often favourites win.
     finite = np.isfinite(raw)
     work = np.where(finite, raw, (np.nanmin(raw[finite]) - 1) if finite.any() else 0)
     order = np.argsort(-work)
@@ -85,7 +96,7 @@ def predict_from_df(df: pd.DataFrame) -> pd.DataFrame:
     probs = np.zeros(len(df))
     ps = work[pool]
     z = (ps - ps.mean()) / (ps.std() + 1e-9)
-    exp = np.exp(z * 1.3)
+    exp = np.exp(z * odds_scale)
     probs[pool] = exp / exp.sum()
     df["mvp_prob"] = probs
     df["mvp_prob_raw"] = raw
@@ -104,8 +115,9 @@ def format_output(result: pd.DataFrame) -> str:
         pos = row.get("position", "?")
         prob = row.get("mvp_prob", 0)
         lines.append(f"  {i:2}. {player:<25} {pos:<5} {team:<5}  {prob:6.1%}")
-    lines.append("\nOdds are a softmax over the top contenders — ordering is the "
-                 "meaningful signal. Offensive players only (QB/RB/WR/TE).")
+    lines.append("\nOdds come from a ranker + logistic blend, scaled over the top 15 "
+                 "contenders using past seasons. Ordering is more reliable than the "
+                 "exact percentages. Offensive players only (QB/RB/WR/TE).")
     return "\n".join(lines)
 
 

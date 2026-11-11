@@ -13,6 +13,7 @@ data/raw/player_stats.csv
 data/raw/player_stats_weekly.csv
 data/raw/team_records.csv
 data/raw/nflverse_weekly_*.parquet
+data/raw/nflverse_games.parquet
 data/processed/features.csv
 
 # NOTE: trained models (data/processed/*.pkl, *_meta.json), feature weights,

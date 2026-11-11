@@ -11,10 +11,10 @@ the binary logistic model on top-1 (69% vs 65%) and top-3 (88% vs 81%), and it
 directly learns the ordering (e.g. that a 98%-vote winner belongs above a
 gaudy-stat runner-up).
 
-One ranker is trained per offensive track (qb, skill) so passing weights don't
-distort running-back scoring, mirroring the logistic model's track design.
-Defensive/kicker candidates are out of scope here (handled only by the legacy
-logistic model).
+A single ranker scores all offensive players (QB/RB/WR/TE) together, since
+ranking is comparative. In v3 it is blended 50/50 with a logistic regression
+trained to predict "received any MVP votes" (see ensemble_cv). Defensive and
+kicker candidates are out of scope.
 """
 
 import json
@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRanker
 
@@ -50,6 +51,17 @@ XGB_PARAMS = dict(
     random_state=42,
     n_jobs=2,
 )
+
+
+# Ensemble: the ranker is blended 50/50 with a logistic regression trained to
+# predict "received any MVP votes". The two make correlated but not identical
+# mistakes; in 8-seed leave-one-season-out CV the blend beat the ranker alone
+# (MRR ~0.81 vs ~0.77). The blend weight was fixed in advance, not tuned.
+LOGIT_C = 0.01
+W_RANKER = 0.5
+ODDS_POOL = 15
+ODDS_SCALES = [0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 2.5, 3.0]
+PROB_FLOOR = 1e-3
 
 
 def vote_relevance(vs: float) -> int:
@@ -89,6 +101,102 @@ def _fit_ranker(sub: pd.DataFrame, feats: list, params: dict = None):
     r = XGBRanker(**(params or XGB_PARAMS))
     r.fit(Xs, y, group=groups)
     return r, scaler
+
+
+def _clean_X(df: pd.DataFrame, feats: list) -> np.ndarray:
+    return df[feats].replace([np.inf, -np.inf], np.nan).fillna(0).values
+
+
+def _fit_logit(sub: pd.DataFrame, feats: list):
+    """Logistic regression for 'received any MVP votes'. Returns (model, scaler)."""
+    scaler = StandardScaler()
+    X = scaler.fit_transform(_clean_X(sub, feats))
+    y = (sub["vote_share"].fillna(0) > 0).astype(int).values
+    m = LogisticRegression(C=LOGIT_C, max_iter=3000)
+    m.fit(X, y)
+    return m, scaler
+
+
+def _zscore(v) -> np.ndarray:
+    v = np.asarray(v, dtype=float)
+    return (v - v.mean()) / (v.std() + 1e-9)
+
+
+def blend_scores(ranker_scores, logit_scores, w_ranker: float = W_RANKER) -> np.ndarray:
+    """Blend two models' scores after standardising each within the candidate pool."""
+    return w_ranker * _zscore(ranker_scores) + (1 - w_ranker) * _zscore(logit_scores)
+
+
+def _winner_ranks(off: pd.DataFrame, pred: np.ndarray) -> dict:
+    o = off.assign(pred=pred)
+    out = {}
+    for s, g in o.groupby("season"):
+        if g["mvp_winner"].sum() == 0:
+            continue
+        r = g["pred"].rank(ascending=False, method="min")
+        out[int(s)] = int(r[g["mvp_winner"] == 1].min())
+    return out
+
+
+def _summarize(ranks: dict) -> dict:
+    rk = np.array(list(ranks.values()), dtype=float)
+    out = {f"top_{n}_acc": round(float((rk <= n).mean()), 3) for n in (1, 2, 3, 5)}
+    out["mrr"] = round(float((1.0 / rk).mean()), 4)
+    out["mean_rank"] = round(float(rk.mean()), 3)
+    return out
+
+
+def ensemble_cv(off: pd.DataFrame, feats: list, seed: int = None) -> dict:
+    """
+    Leave-one-season-out CV of the ranker, the logistic model, and their blend.
+    Returns metrics for each plus the blended out-of-fold scores.
+    """
+    off = off.reset_index(drop=True)
+    rcv = cross_validate(off, feats, seed=seed)
+    lcv = np.zeros(len(off))
+    for s in sorted(off["season"].unique()):
+        tr = off[off["season"] != s]
+        te_idx = off.index[off["season"] == s]
+        m, sc = _fit_logit(tr, feats)
+        lcv[te_idx] = m.decision_function(sc.transform(_clean_X(off.loc[te_idx], feats)))
+
+    blend = np.zeros(len(off))
+    for s in sorted(off["season"].unique()):
+        idx = off.index[off["season"] == s].values
+        blend[idx] = blend_scores(rcv["oof_pred"][idx], lcv[idx])
+
+    return {
+        "ranker": _summarize(rcv["winner_ranks"]),
+        "logistic": _summarize(_winner_ranks(off, lcv)),
+        "ensemble": _summarize(_winner_ranks(off, blend)),
+        "blend_oof": blend,
+    }
+
+
+def fit_odds_scale(off: pd.DataFrame, blend_oof: np.ndarray) -> float:
+    """
+    Choose the softmax scale that turns blended scores into well-calibrated win
+    probabilities: minimise the log loss of the actual winner over past seasons,
+    using the top-15 contender pool and out-of-fold scores.
+    """
+    off = off.reset_index(drop=True).assign(pred=blend_oof)
+    pools = []
+    for s, g in off.groupby("season"):
+        g = g.sort_values("pred", ascending=False).head(ODDS_POOL)
+        w = g["mvp_winner"].values.astype(float)
+        if w.sum() == 0:
+            continue
+        pools.append((_zscore(g["pred"].values), w / w.sum()))
+    best, best_loss = None, np.inf
+    for sc in ODDS_SCALES:
+        loss = 0.0
+        for z, w in pools:
+            p = np.exp(z * sc)
+            p /= p.sum()
+            loss += -(w * np.log(np.clip(p, PROB_FLOOR, 1))).sum()
+        if loss < best_loss:
+            best, best_loss = sc, loss
+    return float(best)
 
 
 def cross_validate(off: pd.DataFrame, feats: list, seed: int = None) -> dict:
@@ -154,27 +262,40 @@ def train() -> dict:
           f"{int((off['vote_share']>0).sum())} vote-getters.")
 
     feats = _offense_features(off)
-    cvres = cross_validate(off, feats)
-    top_n = {k: v for k, v in cvres.items() if k.startswith("top_")}
+    cvres = ensemble_cv(off, feats, seed=XGB_PARAMS["random_state"])
 
-    print(f"\n=== Ranker CV (modern {START}-{END}) ===")
-    for k, v in top_n.items():
-        print(f"  {k}:  {v:.1%}")
-    print(f"  mrr:  {cvres['mrr']:.3f}   mean winner rank: {cvres['mean_rank']:.2f}")
+    print(f"\n=== Leave-one-season-out CV (modern {START}-{END}, ranker seed "
+          f"{XGB_PARAMS['random_state']}) ===")
+    for name in ("ranker", "logistic", "ensemble"):
+        m = cvres[name]
+        print(f"  {name:9s} top-1 {m['top_1_acc']:.1%}  top-3 {m['top_3_acc']:.1%}  "
+              f"top-5 {m['top_5_acc']:.1%}  mrr {m['mrr']:.3f}  "
+              f"mean rank {m['mean_rank']:.2f}")
+    print("  (single-seed top-1 swings about +/-7 pts; see README for 8-seed figures)")
 
-    # Fit final ranker on all offensive data
-    print("\nFitting final ranker on full dataset...")
+    odds_scale = fit_odds_scale(off, cvres["blend_oof"])
+    print(f"  odds softmax scale fitted on out-of-fold blended scores: {odds_scale}")
+
+    # Fit final models on all offensive data
+    print("\nFitting final ranker and logistic model on full dataset...")
     r, scaler = _fit_ranker(off, feats)
-    bundle = {"kind": "ranker", "era": "modern",
+    lm, lscaler = _fit_logit(off, feats)
+    bundle = {"kind": "ensemble", "era": "modern",
               "tracks": {"offense": {"ranker": r, "scaler": scaler,
+                                     "logit": lm, "logit_scaler": lscaler,
+                                     "w_ranker": W_RANKER, "odds_scale": odds_scale,
                                      "feature_cols": feats, "base_rate": 1.0}}}
     with open(PROCESSED_DIR / "mvp_model_modern.pkl", "wb") as f:
         pickle.dump(bundle, f)
 
+    top_n = {k: v for k, v in cvres["ensemble"].items() if k.startswith("top_")}
     meta = {
-        "era": "modern", "model_type": "xgboost-ranker",
+        "era": "modern", "model_type": "ranker+logistic ensemble",
         "start_season": START, "end_season": END,
-        "n_features": len(feats), **top_n,
+        "n_features": len(feats), "w_ranker": W_RANKER, "logit_c": LOGIT_C,
+        "odds_scale": odds_scale,
+        "cv_ranker": cvres["ranker"], "cv_logistic": cvres["logistic"],
+        "cv_ensemble": cvres["ensemble"], **top_n,
     }
     with open(PROCESSED_DIR / "mvp_model_modern_meta.json", "w") as f:
         json.dump(meta, f, indent=2)

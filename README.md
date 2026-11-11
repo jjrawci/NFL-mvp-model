@@ -1,20 +1,33 @@
-# NFL MVP Prediction (v2)
+# NFL MVP Prediction (v3)
 
-Predicts NFL AP MVP odds from season stats. A learning-to-rank model trained on
-every modern MVP race (1999–2025) scores a pool of players for a given season
-and outputs each player's probability of winning MVP.
+Predicts NFL AP MVP odds from season stats. A blend of a learning-to-rank model
+and a logistic regression, trained on every modern MVP race (1999–2025), scores
+a pool of players for a given season and outputs each player's probability of
+winning MVP.
 
 ## Results
 
-Leave-one-season-out cross-validation over 27 seasons (1999–2025):
+Leave-one-season-out cross-validation over 27 seasons (1999–2025), averaged over
+8 random seeds of the ranker (the logistic part is deterministic):
 
-| Metric | Score | Meaning |
-|--------|-------|---------|
-| Top-1  | 63%   | model's #1 pick was the actual MVP |
-| Top-3  | 89%   | actual MVP was in the model's top 3 |
-| Top-5  | 93%   | actual MVP was in the model's top 5 |
+| Model | Top-1 | Top-3 | Top-5 | MRR |
+|-------|-------|-------|-------|-----|
+| Ranker alone (v2) | 64% | 88% | 94% | 0.768 |
+| Logistic alone | 70% | 89% | 100% | 0.814 |
+| **Blend (v3, used)** | 73% | 86% | 98% | 0.808 |
 
-Top-3 and top-5 are the most reliable measures of quality — with only ~27 MVP
+MRR is the mean reciprocal rank of the true winner (1.0 = always ranked first).
+
+How much to trust this: with 27 seasons these differences are small relative to
+the noise. The blend beat the ranker alone by +0.041 ± 0.020 MRR, but was level
+with logistic alone (-0.006 ± 0.036). The logistic label ("received any votes")
+and its regularization were picked after looking at the same seasons, so the
+true edge is probably smaller than the table suggests. The blend was chosen over
+logistic alone because its weight was fixed in advance and it depends less on one
+tuned setting, not because it scored higher. A single ranker seed can swing
+top-1 from about 56% to 74%.
+
+Top-3 and top-5 are the most reliable measures of quality. With only ~27 MVP
 races, top-1 is noisy because the closest two-player races (e.g. Stafford vs.
 Maye 2025, decided by one first-place vote) are near coin-flips the stats can't
 separate.
@@ -22,10 +35,21 @@ separate.
 ## How it works
 
 **Learning to rank.** MVP voting is a per-season ranking problem, not binary
-classification. The model (XGBoost's ranking objective) is trained on the full
+classification. The ranker (XGBoost's ranking objective) is trained on the full
 AP voting data as graded relevance: a near-unanimous winner is a 4, a player who
 got a stray vote is a 1, non-vote-getters are 0. It learns to order players
-within each season, which beats a binary winner/not-winner classifier.
+within each season.
+
+**Blended with a logistic regression.** A regularized logistic regression is
+trained to predict whether a player received any MVP votes. Each model's scores
+are standardized across the season's offensive pool and averaged 50/50. The two
+models make correlated but different mistakes (per-season correlation about
+0.73), so the blend is more stable than either alone.
+
+**Odds.** Scores are turned into percentages with a softmax over the top 15
+contenders. The softmax scale (2.0) is fitted on out-of-fold scores from past
+seasons, so stated odds track how often favourites actually win. The earlier
+v2 odds were underconfident: the favourite averaged 45% but won 63% of the time.
 
 **One model over all offensive candidates.** QBs, RBs, WRs and TEs are ranked
 together so the model learns their relative order directly (e.g. a historic RB
@@ -73,7 +97,7 @@ python run.py ingest     # local parquet → raw season/weekly/team CSVs
 python run.py refresh    # pull the latest weeks of the current season, rebuild features
 python run.py mvp        # scrape AP MVP winners from Wikipedia
 python run.py features   # build the engineered feature dataset
-python run.py train      # train the ranker
+python run.py train      # train the ranker + logistic blend
 ```
 
 ## Project layout
@@ -88,7 +112,9 @@ MVPproject/
 │   ├── voter_bias.py         # voter-bias features (tested, not used by the model)
 │   ├── features.py           # feature engineering (shared by train + predict)
 │   ├── features_spec.py      # feature sets + position-track definitions
-│   ├── model_ranker.py       # the learning-to-rank model (train + save)
+│   ├── model_ranker.py       # ranker + logistic blend (train + save)
+│   ├── schedule.py           # schedule features (tested, not used)
+│   ├── electorate.py         # vote simulation for odds (tested, not used)
 │   └── predict.py            # score a player pool
 ├── data/
 │   ├── raw/                  # generated stats + MVP winners + voting tables
@@ -135,11 +161,39 @@ Because top-1 accuracy shifts by about ±7 points with the random seed alone,
 feature comparisons here use several seeds and mean reciprocal rank rather than
 a single-seed top-1.
 
-## v1 vs v2
+## Other experiments that didn't help
+
+All compared over 8 seeds against the baseline (change in mean reciprocal rank,
+± standard error):
+
+| Idea | Change in MRR |
+|------|---------------|
+| Strength of schedule (`src/schedule.py`) | +0.002 ± 0.011 |
+| Primetime exposure | +0.005 ± 0.011 |
+| Cast discount (production minus team volume) | -0.008 ± 0.005 |
+| Margin over the next-best player | -0.045 ± 0.006 (clearly worse) |
+| Interaction features (win % x production) | -0.009 ± 0.013 |
+| All-time percentile comparisons | +0.000 ± 0.013 |
+| Median instead of zero imputation | -0.003 ± 0.010 |
+
+Only the margin features were clearly harmful; the rest are within noise, so
+they were left out to keep the model simple.
+
+**Electorate simulation** (`src/electorate.py`). Simulates 50 voters with a shared
+per-player "narrative" shock plus individual noise, 10-5-3-2-1 points, and counts
+wins. Held-out log loss was 1.131, versus 1.126 for a softmax with its scale
+re-fitted. That is a tie, so the simpler softmax is used. Both beat the old
+untuned scale (1.244). The simulation's voter-noise setting also landed on the
+edge of the search grid, so it is not well pinned down.
+
+## Versions
 
 - **v1** (tagged `v1`): logistic-regression models, binary winner target, two
   eras (modern + legacy 1957–1998). ~61% top-1 modern.
-- **v2** (current): learning-to-rank on full voting data, modern-only
+- **v2** (tagged `v2`): learning-to-rank on full voting data, modern-only
   (1999–2025), tuned. Better top-3/top-5, cleaner codebase.
+- **v3** (current): ranker + logistic blend, odds scale fitted on past seasons.
+  The schedule, voter-bias and other feature experiments above were tested and
+  left out.
 
-Check out the `v1` tag to see the earlier approach.
+Check out the `v1` or `v2` tags to see the earlier approaches.

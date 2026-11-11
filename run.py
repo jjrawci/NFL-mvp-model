@@ -1,11 +1,11 @@
 """
-run.py — command-line interface for the NFL MVP prediction project (v2).
+run.py — command-line interface for the NFL MVP prediction project (v3).
 
 Data flow:
   ingest   → process the local game-by-game parquet into raw season CSVs
   mvp      → scrape AP MVP winners from Wikipedia
   features → build the engineered feature dataset
-  train    → train the learning-to-rank MVP model (1999–2025)
+  train    → train the ranker + logistic MVP ensemble (1999–2025)
   predict  → predict MVP odds for a season or a custom set of players
 
 Common commands:
@@ -109,14 +109,14 @@ def cmd_pipeline(args):
     scrape_mvp_winners()
     print("\nStep 3/4: Building features...")
     build_features()
-    print("\nStep 4/4: Training the ranker...")
+    print("\nStep 4/4: Training the ranker + logistic ensemble...")
     model_ranker.train()
     print("\n\u2713 Pipeline complete. Run `python run.py predict --season 2026` to predict.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NFL MVP Prediction (v2)",
+        description="NFL MVP Prediction (v3)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -128,7 +128,7 @@ def main():
                        help="Season to refresh (default: the current in-progress season)")
     sub.add_parser("mvp", help="Scrape AP MVP winners from Wikipedia")
     sub.add_parser("features", help="Build the feature dataset")
-    sub.add_parser("train", help="Train the learning-to-rank MVP model")
+    sub.add_parser("train", help="Train the ranker + logistic MVP ensemble")
 
     p_pred = sub.add_parser("predict", help="Predict MVP probabilities")
     p_pred.add_argument("--season", type=int, default=None,

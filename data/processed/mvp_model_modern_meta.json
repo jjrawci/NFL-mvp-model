@@ -1,11 +1,38 @@
 {
   "era": "modern",
-  "model_type": "xgboost-ranker",
+  "model_type": "ranker+logistic ensemble",
   "start_season": 1999,
   "end_season": 2025,
   "n_features": 100,
-  "top_1_acc": 0.63,
+  "w_ranker": 0.5,
+  "logit_c": 0.01,
+  "odds_scale": 2.0,
+  "cv_ranker": {
+    "top_1_acc": 0.63,
+    "top_2_acc": 0.778,
+    "top_3_acc": 0.889,
+    "top_5_acc": 0.926,
+    "mrr": 0.7587,
+    "mean_rank": 1.963
+  },
+  "cv_logistic": {
+    "top_1_acc": 0.704,
+    "top_2_acc": 0.852,
+    "top_3_acc": 0.889,
+    "top_5_acc": 1.0,
+    "mrr": 0.8142,
+    "mean_rank": 1.63
+  },
+  "cv_ensemble": {
+    "top_1_acc": 0.704,
+    "top_2_acc": 0.778,
+    "top_3_acc": 0.852,
+    "top_5_acc": 0.963,
+    "mrr": 0.7957,
+    "mean_rank": 1.815
+  },
+  "top_1_acc": 0.704,
   "top_2_acc": 0.778,
-  "top_3_acc": 0.889,
-  "top_5_acc": 0.926
+  "top_3_acc": 0.852,
+  "top_5_acc": 0.963
 }
